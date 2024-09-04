@@ -928,21 +928,21 @@ class LlamaModel(LlamaPreTrainedModel):
         )
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
+    
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError(
                 "You cannot specify both input_ids and inputs_embeds at the same time, and must specify either one"
             )
-
+    
         if self.gradient_checkpointing and self.training and use_cache:
             logger.warning_once(
                 "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
             )
             use_cache = False
-
+    
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
-
+    
         return_legacy_cache = False
         if (
             use_cache and not isinstance(past_key_values, Cache) and not self.training
@@ -953,7 +953,7 @@ class LlamaModel(LlamaPreTrainedModel):
                 "We detected that you are passing `past_key_values` as a tuple and this is deprecated and will be removed in v4.43. "
                 "Please use an appropriate `Cache` class (https://huggingface.co/docs/transformers/internal/generation_utils#transformers.Cache)"
             )
-
+    
         if cache_position is None:
             past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
             cache_position = torch.arange(
@@ -961,19 +961,29 @@ class LlamaModel(LlamaPreTrainedModel):
             )
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
-
+    
+        # Calcula turn_ids com base na attention_mask sem usar for loops
+        if attention_mask is not None:
+            # Cria um tensor com os mesmos tamanhos que a atenção, preenchido com zeros
+            turn_ids = torch.zeros_like(attention_mask, device=attention_mask.device)
+    
+            # Calcula a diferença ao longo da dimensão de sequência
+            mask_diff = attention_mask.diff(dim=1, prepend=attention_mask[:, :1])
+            
+            # Cada vez que o valor muda de 0 para 1, incrementa turn_ids cumulativamente
+            turn_ids = (mask_diff == 1).cumsum(dim=1)
+    
+        else:
+            turn_ids = None  # Se attention_mask não for fornecido, turn_ids não é calculado
+    
         causal_mask = self._update_causal_mask(
             attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
         )
         hidden_states = inputs_embeds
-
-        print(hidden_states)
-        print(position_ids)
-
-        # create position embeddings to be shared across the decoder layers
+    
+        # cria embeddings de posição para serem compartilhados entre as camadas do decodificador
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
-
-        print(position_embeddings)
+        
 
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
