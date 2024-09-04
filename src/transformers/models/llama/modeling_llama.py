@@ -976,28 +976,34 @@ class LlamaModel(LlamaPreTrainedModel):
             )
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
-    
-        # Calcula turn_ids com base na attention_mask sem usar for loops
-        if attention_mask is not None:
-            # Cria um tensor com os mesmos tamanhos que a atenção, preenchido com zeros
-            turn_ids = torch.zeros_like(attention_mask, device=attention_mask.device)
-    
-            # Calcula a diferença ao longo da dimensão de sequência
-            mask_diff = attention_mask.diff(dim=1, prepend=attention_mask[:, :1])
             
-            # Cada vez que o valor muda de 0 para 1, incrementa turn_ids cumulativamente
-            turn_ids = (mask_diff == 1).cumsum(dim=1)
-    
+        # Calcula turn_ids de forma ultra-otimizada
+        if attention_mask is not None:
+            # Inicializa turn_ids diretamente, usando int8 para minimizar o uso de memória
+            turn_ids = torch.zeros_like(attention_mask, dtype=torch.int8, device=attention_mask.device)
+        
+            # Identifica mudanças diretamente na máscara de atenção usando uma operação XOR bit a bit
+            # Usando slices para evitar criação de novos tensores
+            changes = (attention_mask[:, 1:] != attention_mask[:, :-1]).to(dtype=torch.int8)
+        
+            # Atualiza diretamente em turn_ids com a operação cumulativa para evitar tensores intermediários
+            turn_ids[:, 1:] = changes.cumsum(dim=1)
+        
+            # Libera o tensor intermediário `changes` imediatamente
+            del changes
+        
         else:
-            turn_ids = None  # Se attention_mask não for fornecido, turn_ids não é calculado
-    
+            turn_ids = None  # Se attention_mask não for fornecido, turn_ids não é calculado.
+
+
         causal_mask = self._update_causal_mask(
             attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
         )
+        
         hidden_states = inputs_embeds
-    
+
         # cria embeddings de posição para serem compartilhados entre as camadas do decodificador
-        position_embeddings = self.rotary_emb(hidden_states, position_ids, turn_ids = turn_ids)
+        position_embeddings = self.rotary_emb(hidden_states, position_ids, turn_ids=turn_ids)
         
 
         # decoder layers
