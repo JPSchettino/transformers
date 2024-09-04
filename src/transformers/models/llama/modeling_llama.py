@@ -144,7 +144,7 @@ class LlamaRotaryEmbedding(nn.Module):
         config: Optional[LlamaConfig] = None,
     ):
         super().__init__()
-        # TODO (joao): remove the `if` below, only used for BC
+        # Inicialização de parâmetros de configuração
         self.rope_kwargs = {}
         if config is None:
             logger.warning_once(
@@ -162,7 +162,6 @@ class LlamaRotaryEmbedding(nn.Module):
             self.max_seq_len_cached = max_position_embeddings
             self.original_max_seq_len = max_position_embeddings
         else:
-            # BC: "rope_type" was originally "type"
             if config.rope_scaling is not None:
                 self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
             else:
@@ -179,44 +178,60 @@ class LlamaRotaryEmbedding(nn.Module):
 
     def _dynamic_frequency_update(self, position_ids, device):
         """
-        dynamic RoPE layers should recompute `inv_freq` in the following situations:
-        1 - growing beyond the cached sequence length (allow scaling)
-        2 - the current sequence length is in the original scale (avoid losing precision with small sequences)
+        Atualiza dinamicamente as frequências inversas (inv_freq) com base no comprimento da sequência.
         """
         seq_len = torch.max(position_ids) + 1
-        if seq_len > self.max_seq_len_cached:  # growth
+        if seq_len > self.max_seq_len_cached:
             inv_freq, self.attention_scaling = self.rope_init_fn(
                 self.config, device, seq_len=seq_len, **self.rope_kwargs
             )
-            self.register_buffer("inv_freq", inv_freq, persistent=False)  # TODO joao: may break with compilation
+            self.register_buffer("inv_freq", inv_freq, persistent=False)
             self.max_seq_len_cached = seq_len
 
-        if seq_len < self.original_max_seq_len and self.max_seq_len_cached > self.original_max_seq_len:  # reset
+        if seq_len < self.original_max_seq_len and self.max_seq_len_cached > self.original_max_seq_len:
             self.register_buffer("inv_freq", self.original_inv_freq, persistent=False)
             self.max_seq_len_cached = self.original_max_seq_len
 
     @torch.no_grad()
-    def forward(self, x, position_ids):
+    def forward(self, x, position_ids, turn_ids=None):
+        """
+        Calcula os embeddings de posição rotativos para tokens e turnos de fala.
+        Args:
+            x: Tensor de entrada com embeddings dos tokens.
+            position_ids: Tensor com posições dos tokens na sequência.
+            turn_ids: Tensor opcional com posições dos turnos de fala.
+        """
         if "dynamic" in self.rope_type:
             self._dynamic_frequency_update(position_ids, device=x.device)
 
-        # Core RoPE block
+        # Expande as frequências inversas para combinar com o formato dos `position_ids`
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
         position_ids_expanded = position_ids[:, None, :].float()
-        # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
+
+        # Se `turn_ids` for fornecido, expandimos para combinar o formato dos `turn_ids`
+        if turn_ids is not None:
+            turn_ids_expanded = turn_ids[:, None, :].float()
+            # Combina as posições dos tokens e turnos para calcular as frequências combinadas
+            combined_positions = position_ids_expanded + turn_ids_expanded
+        else:
+            combined_positions = position_ids_expanded
+
+        # Força float32 para evitar problemas de precisão
         device_type = x.device.type
         device_type = device_type if isinstance(device_type, str) and device_type != "mps" else "cpu"
         with torch.autocast(device_type=device_type, enabled=False):
-            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+            # Calcula as frequências para as posições combinadas
+            freqs = (inv_freq_expanded.float() @ combined_positions.float()).transpose(1, 2)
             emb = torch.cat((freqs, freqs), dim=-1)
             cos = emb.cos()
             sin = emb.sin()
 
-        # Advanced RoPE types (e.g. yarn) apply a post-processing scaling factor, equivalent to scaling attention
+        # Aplica o fator de escalonamento pós-processamento, se necessário
         cos = cos * self.attention_scaling
         sin = sin * self.attention_scaling
 
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
+
 
 
 class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
@@ -982,7 +997,7 @@ class LlamaModel(LlamaPreTrainedModel):
         hidden_states = inputs_embeds
     
         # cria embeddings de posição para serem compartilhados entre as camadas do decodificador
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        position_embeddings = self.rotary_emb(hidden_states, position_ids, turn_ids = turn_ids)
         
 
         # decoder layers
