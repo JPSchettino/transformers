@@ -212,7 +212,8 @@ class LlamaRotaryEmbedding(nn.Module):
         if turn_ids is not None:
             turn_ids_expanded = turn_ids[:, None, :].float()
             # Combina as posições dos tokens e turnos para calcular as frequências combinadas
-            combined_positions = position_ids_expanded + turn_ids_expanded
+            #tenho que avaliar melhor essa forma de combinar aqui
+            combined_positions = position_ids_expanded * turn_ids_expanded
         else:
             combined_positions = position_ids_expanded
 
